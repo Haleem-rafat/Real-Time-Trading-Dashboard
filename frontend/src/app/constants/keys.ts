@@ -8,5 +8,6 @@ export type ELocalStorageKeys =
 
 export const SWR_KEYS = {
   TICKERS: 'tickers',
-  TICKER_HISTORY: (symbol: string) => ['ticker-history', symbol] as const,
+  TICKER_HISTORY: (symbol: string, range: string, interval: string) =>
+    ['ticker-history', symbol, range, interval] as const,
 } as const;
