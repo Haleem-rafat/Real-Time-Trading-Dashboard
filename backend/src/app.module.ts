@@ -12,6 +12,7 @@ import { UserModule } from './user/user.module';
 import { AuthModule } from './auth/auth.module';
 import { TickerModule } from './ticker/ticker.module';
 import { MarketDataModule } from './market-data/market-data.module';
+import { SocketModule } from './socket/socket.module';
 
 @Module({
   imports: [
@@ -28,6 +29,7 @@ import { MarketDataModule } from './market-data/market-data.module';
     AuthModule,
     TickerModule,
     MarketDataModule,
+    SocketModule,
   ],
   controllers: [AppController],
   providers: [
