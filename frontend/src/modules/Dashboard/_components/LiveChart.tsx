@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { Loader2 } from 'lucide-react';
 import {
   Area,
   AreaChart,
@@ -12,7 +13,10 @@ import {
 import { useAppSelector } from '@store/hooks';
 import { useTickerHistory } from '@hooks/useTickerHistory';
 import { useTheme } from '@hooks/useTheme';
-import type { IPricePoint } from '../../../app/api/types/ticker.types';
+import type {
+  IPricePoint,
+  TChartRange,
+} from '../../../app/api/types/ticker.types';
 
 /**
  * Recharts needs raw hex strings for stroke / fill / grid color, so it
@@ -51,6 +55,7 @@ const CHART_PALETTE = {
 
 interface Props {
   symbol: string;
+  range: TChartRange;
 }
 
 // Internal buffer cap — we keep up to MAX_POINTS in state for safety,
@@ -98,9 +103,58 @@ function formatTimeLong(ts: number): string {
   });
 }
 
-function LiveChart({ symbol }: Props) {
-  const { history, error } = useTickerHistory(symbol, '1h', '1m');
-  const tick = useAppSelector((s) => s.livePrices.bySymbol[symbol]);
+/** Pick an X-axis tick formatter that matches the chart span. Minute
+ *  precision for intraday, month/year for multi-year views. */
+function makeAxisFormatter(spanMs: number): (ts: number) => string {
+  const DAY = 24 * 60 * 60 * 1000;
+  if (spanMs <= 2 * DAY) return formatTimeShort;
+  if (spanMs <= 60 * DAY) {
+    return (ts) =>
+      new Date(ts).toLocaleDateString('en-US', {
+        month: 'short',
+        day: 'numeric',
+      });
+  }
+  return (ts) =>
+    new Date(ts).toLocaleDateString('en-US', {
+      month: 'short',
+      year: '2-digit',
+    });
+}
+
+/** Matching tooltip label formatter — shows the full date for
+ *  longer ranges so the user knows what day they're hovering. */
+function makeTooltipFormatter(spanMs: number): (ts: number) => string {
+  const DAY = 24 * 60 * 60 * 1000;
+  if (spanMs <= 2 * DAY) return formatTimeLong;
+  return (ts) =>
+    new Date(ts).toLocaleDateString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+    });
+}
+
+// Stable string key for a TChartRange — used as an effect dep so we
+// reset + crossfade whenever the user picks a different range without
+// tearing down the whole component.
+function rangeKeyFor(range: TChartRange): string {
+  return range.mode === 'preset'
+    ? `preset:${range.range}`
+    : `custom:${range.from}:${range.to}`;
+}
+
+function LiveChart({ symbol, range }: Props) {
+  const { history, error } = useTickerHistory(symbol, range);
+  // Live ticks only meaningfully accumulate into the "1H" view. Any
+  // longer-range preset or custom window is a historical snapshot —
+  // appending 500ms ticks to a 5-year chart is invisible anyway, and
+  // it changes the YAxis domain unpredictably, so we skip it.
+  const isLiveWindow = range.mode === 'preset' && range.range === '1h';
+  const tick = useAppSelector((s) =>
+    isLiveWindow ? s.livePrices.bySymbol[symbol] : undefined,
+  );
+  const rKey = rangeKeyFor(range);
   // Lazy-initialize from whatever SWR returned synchronously so a cache
   // hit renders the chart immediately instead of flashing the skeleton
   // for one frame. Cache miss → starts empty, the seed effect below
@@ -108,14 +162,28 @@ function LiveChart({ symbol }: Props) {
   const [chartData, setChartData] = useState<ChartPoint[]>(() =>
     history.length > 0 ? history.map(toChartPoint) : [],
   );
+  // The range the current chartData was seeded from. If the user
+  // picks a different range we reset the buffer and crossfade into
+  // the new series instead of fully unmounting the chart.
+  const [loadedRangeKey, setLoadedRangeKey] = useState<string>(rKey);
   const { theme } = useTheme();
   const palette = CHART_PALETTE[theme];
 
-  // Seed once when history first arrives (cache-miss path). After the
+  // Reset the local buffer whenever the user switches range. SWR will
+  // refetch under the new cacheKey, the seed effect picks up the new
+  // history, and the container's CSS transition crossfades the line
+  // instead of the whole chart popping out and back in.
+  useEffect(() => {
+    if (loadedRangeKey === rKey) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setChartData([]);
+    setLoadedRangeKey(rKey);
+  }, [rKey, loadedRangeKey]);
+
+  // Seed whenever history arrives for the *current* range. After the
   // initial seed we leave chartData alone so that SWR revalidations
-  // never wipe accumulated live ticks. Symbol changes are handled by
-  // `key={symbol}` on the parent — that fully remounts this component
-  // with fresh state, so we don't need symbol in the deps array.
+  // never wipe accumulated live ticks. The range-reset effect above
+  // clears chartData on range switches, allowing this to fire again.
   useEffect(() => {
     if (history.length === 0) return;
     if (chartData.length > 0) return;
@@ -139,45 +207,61 @@ function LiveChart({ symbol }: Props) {
     });
   }, [tick, symbol]);
 
-  // Baseline reference price for this session.
+  // Baseline reference price.
   //
-  // Derived from the live tick: `tick.price - tick.change` exactly equals
-  // the simulator's session-open price for this symbol (the reference
-  // point the backend uses to compute changePct). Drawing this line on
-  // the chart means the visual coloring is guaranteed to agree with the
-  // ticker row's coloring — above the line = green = positive %, below
-  // the line = red = negative %.
+  // In the live "1H" view, `tick.price - tick.change` exactly equals
+  // the simulator's session-open price — drawing this means the line's
+  // coloring always agrees with the ticker-row badge.
   //
-  // When no tick has arrived yet (initial paint), fall back to the
-  // arithmetic mean of the visible historical points so the line still
-  // renders somewhere reasonable.
+  // For historical ranges (1D/1W/.../custom) there's no "session open"
+  // to anchor to, so we use the FIRST point of the selected window.
+  // That gives a natural "change from the start of this view" reference.
   const baseline = useMemo(() => {
-    if (tick) return Number((tick.price - tick.change).toFixed(2));
+    if (isLiveWindow && tick) {
+      return Number((tick.price - tick.change).toFixed(2));
+    }
     if (chartData.length === 0) return null;
-    const sum = chartData.reduce((acc, p) => acc + p.price, 0);
-    return Number((sum / chartData.length).toFixed(2));
-  }, [tick, chartData]);
+    return Number(chartData[0].price.toFixed(2));
+  }, [isLiveWindow, tick, chartData]);
 
-  // Match the TickerRow's color so the chart and the row never disagree.
-  // Both read from the same Redux slice → same source of truth → same hue.
+  // Line color: live view follows the tick badge (so chart and row
+  // always agree). Historical ranges follow "first → last of the
+  // selected window" — green if the range ended up, red if down.
   const lineColor = useMemo(() => {
-    if (tick) return tick.changePct >= 0 ? palette.up : palette.down;
+    if (isLiveWindow && tick) {
+      return tick.changePct >= 0 ? palette.up : palette.down;
+    }
     if (chartData.length < 2) return palette.neutral;
     const first = chartData[0].price;
     const last = chartData[chartData.length - 1].price;
     return last >= first ? palette.up : palette.down;
-  }, [tick, chartData, palette]);
+  }, [isLiveWindow, tick, chartData, palette]);
 
-  // Sliding visible window. The full buffer keeps 1h of context (so the
-  // baseline / scroll-back stays meaningful) but the chart only renders
-  // the last N points so live ticks are clearly visible instead of
-  // being lost in 60 minutes of historical width.
+  // Sliding visible window. Only applied to the live "1H" view, where
+  // the full buffer keeps 1h of context but the chart renders the
+  // last N points so live ticks are clearly visible instead of being
+  // lost in 60 minutes of historical width. Longer ranges (1D / 1W /
+  // 1M / 1Y / 5Y / custom) render the full series since we want the
+  // user to see the whole window they picked.
   const visibleData = useMemo(
     () =>
-      chartData.length > VISIBLE_POINTS
+      isLiveWindow && chartData.length > VISIBLE_POINTS
         ? chartData.slice(-VISIBLE_POINTS)
         : chartData,
-    [chartData],
+    [chartData, isLiveWindow],
+  );
+
+  // Pick the axis + tooltip formatters based on how wide the visible
+  // span actually is, not the nominal range — this way custom windows
+  // get the right level of detail automatically.
+  const spanMs = useMemo(() => {
+    if (visibleData.length < 2) return 0;
+    return visibleData[visibleData.length - 1].ts - visibleData[0].ts;
+  }, [visibleData]);
+  const xTickFormatter = useMemo(() => makeAxisFormatter(spanMs), [spanMs]);
+  const tooltipLabelFormatter = useMemo(
+    () => makeTooltipFormatter(spanMs),
+    [spanMs],
   );
 
   // YAxis domain — centered on the session-open price, with a minimum
@@ -198,10 +282,10 @@ function LiveChart({ symbol }: Props) {
 
   const gradientId = `grad-${symbol}`;
 
-  // Show the skeleton whenever we have no points to draw, regardless of
-  // isLoading. This prevents the empty-axis flicker that happens when
-  // SWR has already resolved (isLoading=false) but the seed effect for
-  // the new symbol hasn't run yet.
+  // Show a centered spinner whenever we have no points to draw. This
+  // prevents the empty-axis flicker that happens when SWR has already
+  // resolved (isLoading=false) but the seed effect for the new
+  // symbol/range hasn't run yet.
   if (chartData.length === 0) {
     if (error) {
       return (
@@ -211,20 +295,42 @@ function LiveChart({ symbol }: Props) {
         </div>
       );
     }
-    return <ChartSkeleton palette={palette} />;
+    return (
+      <div className="flex h-full min-h-[260px] sm:min-h-[360px] flex-col items-center justify-center gap-3 text-text-dim">
+        <Loader2 className="h-6 w-6 animate-spin text-accent" />
+        <span className="text-xs uppercase tracking-wider">
+          Loading chart…
+        </span>
+      </div>
+    );
   }
 
   return (
-    <div className="relative h-full min-h-[260px] sm:min-h-[360px] w-full">
+    <div
+      // key={rKey} triggers the Tailwind animation on every range
+      // switch — fade-in + slight slide so the new series "arrives"
+      // instead of popping in. The whole component does not remount,
+      // so SWR / live-tick subscriptions stay intact.
+      key={rKey}
+      className="relative h-full min-h-[260px] sm:min-h-[360px] w-full motion-safe:animate-[chart-fade-in_400ms_ease-out]"
+    >
       {baseline !== null && (
         <div className="pointer-events-none absolute right-4 top-3 z-10 flex items-center gap-1.5 rounded border border-border/70 bg-surface/80 px-2 py-1 text-[10px] uppercase tracking-wider text-text-dim backdrop-blur-sm">
           <span className="h-px w-3 border-t border-dashed border-text-dim" />
-          <span>Open</span>
+          <span>{isLiveWindow ? 'Open' : 'Start'}</span>
           <span className="num font-medium text-text">
             ${baseline.toFixed(2)}
           </span>
         </div>
       )}
+      {/* Shared keyframe used by the wrapper above. Inlined so the
+          animation travels with the component. */}
+      <style>{`
+        @keyframes chart-fade-in {
+          0%   { opacity: 0; transform: translateY(6px); }
+          100% { opacity: 1; transform: translateY(0); }
+        }
+      `}</style>
       <ResponsiveContainer width="100%" height="100%">
         <AreaChart
           data={visibleData}
@@ -247,7 +353,7 @@ function LiveChart({ symbol }: Props) {
             domain={['dataMin', 'dataMax']}
             stroke={palette.axis}
             fontSize={11}
-            tickFormatter={formatTimeShort}
+            tickFormatter={xTickFormatter}
             minTickGap={60}
             axisLine={false}
             tickLine={false}
@@ -283,7 +389,7 @@ function LiveChart({ symbol }: Props) {
             cursor={{ stroke: palette.cursor, strokeWidth: 1 }}
             labelFormatter={(label: unknown) => {
               const ts = typeof label === 'number' ? label : Number(label);
-              return Number.isFinite(ts) ? formatTimeLong(ts) : '';
+              return Number.isFinite(ts) ? tooltipLabelFormatter(ts) : '';
             }}
             formatter={(value: unknown) => {
               const n = typeof value === 'number' ? value : Number(value);
@@ -325,64 +431,5 @@ function LiveChart({ symbol }: Props) {
     </div>
   );
 }
-
-/**
- * Animated SVG skeleton shown while the historical fetch is in flight.
- * Renders a faux gridded chart shape with a sweeping shimmer overlay so
- * the loading state has the same footprint as the real chart and feels
- * "alive" instead of an empty box.
- */
-function ChartSkeleton({
-  palette,
-}: {
-  palette: (typeof CHART_PALETTE)[Theme];
-}) {
-  return (
-    <div className="relative h-full min-h-[260px] w-full overflow-hidden rounded-md sm:min-h-[360px]">
-      <svg
-        className="h-full w-full"
-        viewBox="0 0 600 240"
-        preserveAspectRatio="none"
-        aria-label="Loading chart"
-      >
-        {/* Horizontal grid lines */}
-        {[40, 90, 140, 190].map((y) => (
-          <line
-            key={y}
-            x1="0"
-            x2="600"
-            y1={y}
-            y2={y}
-            stroke={palette.grid}
-            strokeDasharray="3 3"
-          />
-        ))}
-        {/* Faux line + area */}
-        <path
-          d="M0,160 L60,140 L120,170 L180,130 L240,150 L300,110 L360,140 L420,90 L480,120 L540,80 L600,100 L600,240 L0,240 Z"
-          fill={palette.grid}
-          opacity="0.35"
-        />
-        <path
-          d="M0,160 L60,140 L120,170 L180,130 L240,150 L300,110 L360,140 L420,90 L480,120 L540,80 L600,100"
-          fill="none"
-          stroke={palette.axis}
-          strokeWidth="1.5"
-          opacity="0.6"
-        />
-      </svg>
-      {/* Shimmer */}
-      <div className="pointer-events-none absolute inset-0 -translate-x-full animate-[shimmer_1.4s_infinite] bg-gradient-to-r from-transparent via-text-dim/10 to-transparent" />
-      <style>{`
-        @keyframes shimmer {
-          0%   { transform: translateX(-100%); }
-          100% { transform: translateX(100%); }
-        }
-      `}</style>
-    </div>
-  );
-}
-
-type Theme = keyof typeof CHART_PALETTE;
 
 export default LiveChart;

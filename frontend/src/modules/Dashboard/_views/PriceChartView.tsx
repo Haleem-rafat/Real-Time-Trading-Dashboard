@@ -1,10 +1,12 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { TrendingDown, TrendingUp } from 'lucide-react';
 import { cn } from '@/shadecn/lib/utils';
 import { useAppSelector } from '@store/hooks';
 import { useTickers } from '@hooks/useTickers';
 import LiveChart from '../_components/LiveChart';
 import PriceFlash from '../_components/PriceFlash';
+import ChartRangeSelector from '../_components/ChartRangeSelector';
+import type { TChartRange } from '../../../app/api/types/ticker.types';
 
 function PriceChartView() {
   const symbol = useAppSelector((s) => s.selectedTicker.symbol);
@@ -12,6 +14,10 @@ function PriceChartView() {
     symbol ? s.livePrices.bySymbol[symbol] : undefined,
   );
   const { tickers } = useTickers();
+  const [range, setRange] = useState<TChartRange>({
+    mode: 'preset',
+    range: '1h',
+  });
 
   const ticker = useMemo(
     () => tickers.find((t) => t.symbol === symbol),
@@ -85,13 +91,22 @@ function PriceChartView() {
         </div>
       </div>
 
+      {/* Range selector row */}
+      <div className="flex items-center justify-between gap-3 border-b border-border px-4 py-2 sm:px-6">
+        <span className="hidden text-[10px] font-semibold uppercase tracking-wider text-text-dim sm:inline">
+          Range
+        </span>
+        <ChartRangeSelector value={range} onChange={setRange} />
+      </div>
+
       {/* Chart body — explicit viewport-relative height on mobile so the
           chart is always visible regardless of how flex-1 resolves; on lg+
           it fills the remaining main area. */}
       <div className="h-[55vh] min-h-[300px] w-full p-3 sm:p-4 lg:h-auto lg:min-h-0 lg:flex-1">
-        {/* key={symbol} fully remounts the chart on symbol switch so the
-            old ticker's points never flash before the new history loads. */}
-        <LiveChart key={symbol} symbol={symbol} />
+        {/* key={symbol} remounts fully on symbol switch; range changes
+            are handled inside LiveChart with a crossfade instead of a
+            remount so the user sees a smooth transition. */}
+        <LiveChart key={symbol} symbol={symbol} range={range} />
       </div>
     </div>
   );

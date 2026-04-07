@@ -29,7 +29,9 @@ export class TickerController {
 
   @Public()
   @Get(':symbol/history')
-  @ApiOperation({ summary: 'Get historical price points (bucketed by interval)' })
+  @ApiOperation({
+    summary: 'Get historical price points (bucketed by interval)',
+  })
   @ApiParam({ name: 'symbol', example: 'AAPL' })
   async getHistory(
     @Param('symbol') symbol: string,

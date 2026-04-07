@@ -32,5 +32,13 @@ export interface IPriceTick {
   timestamp: number;
 }
 
-export type THistoryRange = '1h' | '1d' | '1w';
-export type THistoryInterval = '1m' | '5m' | '1h';
+export type THistoryRange = '1h' | '1d' | '1w' | '1mo' | '1y' | '5y';
+export type THistoryInterval = '1m' | '5m' | '1h' | '1d';
+
+/**
+ * Custom chart window. When `mode = 'preset'` the range selector uses
+ * one of the preset buttons; `'custom'` uses explicit ISO timestamps.
+ */
+export type TChartRange =
+  | { mode: 'preset'; range: THistoryRange }
+  | { mode: 'custom'; from: string; to: string };

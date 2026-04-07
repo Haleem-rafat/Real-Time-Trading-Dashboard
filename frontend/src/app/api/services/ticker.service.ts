@@ -5,6 +5,7 @@ import type {
   IPricePoint,
   ITicker,
   ITickerWithLastPrice,
+  TChartRange,
   THistoryInterval,
   THistoryRange,
 } from '../types/ticker.types';
@@ -25,11 +26,28 @@ class TickerService {
   public async getHistory(
     symbol: string,
     range: THistoryRange = '1h',
-    interval: THistoryInterval = '1m',
+    interval?: THistoryInterval,
   ): Promise<IPricePoint[]> {
+    const params: Record<string, string> = { range };
+    if (interval) params.interval = interval;
     const { data } = await api.get<IApiResponse<IPricePoint[]>>(
       `${EAPI.TICKERS}/${symbol}/history`,
-      { params: { range, interval } },
+      { params },
+    );
+    return data.data;
+  }
+
+  public async getHistoryByRange(
+    symbol: string,
+    range: TChartRange,
+  ): Promise<IPricePoint[]> {
+    const params: Record<string, string> =
+      range.mode === 'preset'
+        ? { range: range.range }
+        : { from: range.from, to: range.to };
+    const { data } = await api.get<IApiResponse<IPricePoint[]>>(
+      `${EAPI.TICKERS}/${symbol}/history`,
+      { params },
     );
     return data.data;
   }
