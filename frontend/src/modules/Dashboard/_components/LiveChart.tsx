@@ -61,6 +61,15 @@ interface Props {
 const MAX_POINTS = 300;
 const VISIBLE_POINTS = 60;
 
+// Floor on the YAxis half-range, expressed as a fraction of the
+// baseline price. Without this, when the visible window only spans a
+// few cents on a $200 stock, Recharts auto-scales the YAxis so tight
+// that pennies of tick noise look like enormous waves. 0.4% of price
+// as the minimum half-range = ~0.8% total visible range, which keeps
+// small movements looking small but still lets bigger moves push the
+// bounds outward.
+const MIN_HALF_RANGE_PCT = 0.004;
+
 interface ChartPoint {
   ts: number; // millis (used as XAxis dataKey)
   price: number;
@@ -171,6 +180,22 @@ function LiveChart({ symbol }: Props) {
     [chartData],
   );
 
+  // YAxis domain — centered on the session-open price, with a minimum
+  // half-range floor so penny-level tick noise can't be magnified into
+  // a giant visual wave. If real movement exceeds the floor, the
+  // bounds expand to fit it (with 15% breathing room on each side).
+  const yDomain = useMemo<[number, number] | undefined>(() => {
+    if (visibleData.length === 0) return undefined;
+    const prices = visibleData.map((p) => p.price);
+    const dataMin = Math.min(...prices);
+    const dataMax = Math.max(...prices);
+    const center = baseline ?? (dataMin + dataMax) / 2;
+    const dataHalfRange = Math.max(center - dataMin, dataMax - center);
+    const floorHalf = center * MIN_HALF_RANGE_PCT;
+    const halfRange = Math.max(dataHalfRange, floorHalf) * 1.15;
+    return [center - halfRange, center + halfRange];
+  }, [visibleData, baseline]);
+
   const gradientId = `grad-${symbol}`;
 
   // Show the skeleton whenever we have no points to draw, regardless of
@@ -230,7 +255,8 @@ function LiveChart({ symbol }: Props) {
           <YAxis
             stroke={palette.axis}
             fontSize={11}
-            domain={['auto', 'auto']}
+            domain={yDomain ?? ['auto', 'auto']}
+            allowDataOverflow={false}
             tickFormatter={(p: number) =>
               p >= 1000
                 ? `$${(p / 1000).toFixed(1)}k`
