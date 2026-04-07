@@ -26,7 +26,16 @@ export function useTickerHistory(
   const { data, isLoading, error, mutate } = useSWR<IPricePoint[]>(
     cacheKey,
     () => tickerService.getHistoryByRange(symbol!, range),
-    { dedupingInterval: 30_000 },
+    {
+      dedupingInterval: 30_000,
+      // The backend lives on Render's free tier which cold-starts after
+      // idle periods, so the very first history fetch can fail with a
+      // 502 or just time out. Global SWRConfig disables retries, so we
+      // enable them locally here with exponential backoff.
+      shouldRetryOnError: true,
+      errorRetryCount: 4,
+      errorRetryInterval: 1500,
+    },
   );
 
   return {

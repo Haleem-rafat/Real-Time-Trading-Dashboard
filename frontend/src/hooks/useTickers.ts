@@ -7,6 +7,13 @@ export function useTickers() {
   const { data, isLoading, error, mutate } = useSWR<ITicker[]>(
     SWR_KEYS.TICKERS,
     () => tickerService.getAll(),
+    {
+      // Backend cold-starts on Render's free tier; recover automatically
+      // instead of leaving the sidebar stuck in a failed state.
+      shouldRetryOnError: true,
+      errorRetryCount: 4,
+      errorRetryInterval: 1500,
+    },
   );
 
   return {
