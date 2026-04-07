@@ -34,8 +34,11 @@ async function bootstrap() {
   SwaggerModule.setup('docs', app, document);
 
   const port = Number(process.env.PORT ?? 8080);
-  await app.listen(port);
-  logger.log(`🚀 API running on http://localhost:${port}/api/v1`);
-  logger.log(`📚 Swagger docs at http://localhost:${port}/docs`);
+  // Bind explicitly to 0.0.0.0 (not the default :: IPv6 wildcard) so Fly's
+  // edge proxy can reach the app over IPv4. Without this the container
+  // listens on IPv6-only on Alpine and Fly returns 502.
+  await app.listen(port, '0.0.0.0');
+  logger.log(`🚀 API running on http://0.0.0.0:${port}/api/v1`);
+  logger.log(`📚 Swagger docs at http://0.0.0.0:${port}/docs`);
 }
 void bootstrap();
