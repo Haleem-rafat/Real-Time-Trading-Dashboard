@@ -6,8 +6,32 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>TradingTerm — Real-Time Dashboard</title>
     <meta name="theme-color" content="#0a0a0f" />
+    <!--
+      Apply the saved theme (or fall back to the OS preference) BEFORE
+      the first paint, otherwise we get a flash of the wrong theme while
+      React boots and the ThemeProvider runs.
+    -->
+    <script>
+      (function () {
+        try {
+          var pref = localStorage.getItem('trading_theme_pref');
+          var theme;
+          if (pref === 'light' || pref === 'dark') {
+            theme = pref;
+          } else {
+            theme = window.matchMedia &&
+              window.matchMedia('(prefers-color-scheme: light)').matches
+              ? 'light'
+              : 'dark';
+          }
+          document.documentElement.setAttribute('data-theme', theme);
+        } catch (e) {
+          document.documentElement.setAttribute('data-theme', 'dark');
+        }
+      })();
+    </script>
   </head>
-  <body class="dark">
+  <body>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

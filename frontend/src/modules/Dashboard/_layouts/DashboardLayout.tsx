@@ -7,6 +7,7 @@ import { useAuth } from '@hooks/useAuth';
 import { useSocket } from '@hooks/useSocket';
 import { ERoutes } from '@constants/routes';
 import AlertBell from '../_components/AlertBell';
+import ThemeToggle from '../_components/ThemeToggle';
 
 interface Props {
   sidebar: ReactNode;
@@ -47,9 +48,10 @@ function DashboardLayout({ sidebar, children }: Props) {
               {isConnected ? 'Live' : 'Disconnected'}
             </span>
           </div>
-          <div className="flex items-center gap-2 sm:gap-3">
+          <div className="flex items-center gap-1 sm:gap-2">
+            <ThemeToggle />
             <AlertBell />
-            <span className="num hidden text-xs text-text-dim md:inline">
+            <span className="num hidden text-xs text-text-dim md:ml-1 md:inline">
               {user?.email}
             </span>
             <Button variant="outline" size="sm" onClick={onLogout}>
