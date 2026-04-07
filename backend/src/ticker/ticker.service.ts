@@ -8,7 +8,7 @@ import {
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import { InjectModel } from '@nestjs/mongoose';
 import type { Cache } from 'cache-manager';
-import { Model } from 'mongoose';
+import { Model, Types } from 'mongoose';
 import { Ticker, TickerDocument } from './schemas/ticker.schema';
 import {
   HistoricalPrice,
@@ -44,13 +44,63 @@ export class TickerService implements OnModuleInit {
   }
 
   private async seedTickers() {
-    const count = await this.tickerModel.countDocuments();
-    if (count > 0) {
-      this.logger.log(`Tickers already seeded (${count} present)`);
-      return;
+    // Step 1: heal any existing duplicates first. This is defensive — if two
+    // machines booted simultaneously against a fresh DB before the unique
+    // index on `symbol` was built, both ran insertMany() and we ended up
+    // with 2× rows per symbol. This step removes the extras every boot.
+    await this.dedupeTickers();
+
+    // Step 2: idempotent upsert keyed on `symbol`. Safe under concurrent
+    // boots because each updateOne is atomic at the document level — even
+    // if 10 machines run this in parallel they all converge on the same
+    // 6-row state. $setOnInsert ensures we don't overwrite live mutations
+    // (e.g. is_active toggles) on existing rows.
+    const ops = SEED_TICKERS.map((t) => ({
+      updateOne: {
+        filter: { symbol: t.symbol },
+        update: { $setOnInsert: t },
+        upsert: true,
+      },
+    }));
+    const result = await this.tickerModel.bulkWrite(ops);
+    const inserted = result.upsertedCount ?? 0;
+    if (inserted > 0) {
+      this.logger.log(
+        `✅ Seeded ${inserted} new tickers (${SEED_TICKERS.length - inserted} already present)`,
+      );
+    } else {
+      this.logger.log(
+        `Tickers already seeded (${SEED_TICKERS.length} present)`,
+      );
     }
-    await this.tickerModel.insertMany(SEED_TICKERS);
-    this.logger.log(`✅ Seeded ${SEED_TICKERS.length} tickers`);
+  }
+
+  private async dedupeTickers() {
+    const dupes = await this.tickerModel.aggregate<{
+      _id: string;
+      ids: Types.ObjectId[];
+      count: number;
+    }>([
+      {
+        $group: { _id: '$symbol', ids: { $push: '$_id' }, count: { $sum: 1 } },
+      },
+      { $match: { count: { $gt: 1 } } },
+    ]);
+    if (dupes.length === 0) return;
+
+    let totalRemoved = 0;
+    for (const group of dupes) {
+      // Keep the first id (insertion order), delete the rest.
+      const toDelete = group.ids.slice(1);
+      const r = await this.tickerModel.deleteMany({ _id: { $in: toDelete } });
+      totalRemoved += r.deletedCount ?? 0;
+    }
+    this.logger.warn(
+      `🧹 Removed ${totalRemoved} duplicate ticker rows across ${dupes.length} symbols`,
+    );
+    // Invalidate any cached /tickers response so the next request reflects
+    // the cleaned state immediately.
+    await this.cache.del(TICKERS_CACHE_KEY);
   }
 
   private async backfillHistoryIfEmpty() {
